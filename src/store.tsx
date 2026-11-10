@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { Tournament } from './types';
 import { recompute } from './engine/progress';
-import { api, ApiError, type User } from './api';
+import { api, ApiError, type BillingConfig, type User } from './api';
 
 /** Where tournaments lived before accounts existed; offered for import after login. */
 export const LEGACY_KEY = 'matchcraft:tournaments:v1';
@@ -37,6 +37,10 @@ interface Store {
   error: string;
   showError: (message: string) => void;
   dismissError: () => void;
+  billing: BillingConfig;
+  /** Set when a change needs a paid plan; drives the upgrade dialog. */
+  upgrade: { tournamentId?: string; reason: string } | null;
+  askUpgrade: (u: { tournamentId?: string; reason: string } | null) => void;
 }
 
 const StoreContext = createContext<Store | null>(null);
@@ -48,6 +52,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [tournaments, setTournamentsState] = useState<Tournament[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
+  const [billing, setBilling] = useState<BillingConfig>({ enabled: false });
+  const [upgrade, askUpgrade] = useState<Store['upgrade']>(null);
+
+  useEffect(() => {
+    api.config().then(({ billing: b }) => setBilling(b)).catch(() => undefined);
+  }, []);
 
   const current = useRef<Tournament[]>([]);
   /** Last copy the server confirmed, per tournament: the base every queued change is applied to. */
@@ -102,8 +112,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     if (userId) void reloadAll();
   }, [userId, reloadAll, replaceAll]);
 
-  const fail = useCallback((e: unknown) => {
+  const fail = useCallback((e: unknown, tournamentId?: string) => {
     if (e instanceof ApiError && e.status === 401) setAuth({ status: 'out' });
+    if (e instanceof ApiError && e.status === 402) {
+      askUpgrade({ tournamentId, reason: e.message });
+      return;
+    }
     setError(e instanceof Error ? e.message : 'Something went wrong.');
   }, []);
 
@@ -144,7 +158,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         } catch (e) {
           const latest = e instanceof ApiError && e.status === 409 ? (e.data.tournament as Tournament | undefined) : undefined;
           if (!latest) {
-            fail(e);
+            fail(e, id);
             return false;
           }
           // A co-organiser saved first: re-apply this change on top of their version.
@@ -232,7 +246,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     tournaments, loaded, get: (id) => tournaments.find((t) => t.id === id),
     create, update, refresh, reloadAll, remove, forget, setShared,
     error, showError: setError, dismissError: () => setError(''),
-  }), [auth, login, signup, logout, signedIn, refreshUser, tournaments, loaded, create, update, refresh, reloadAll, remove, forget, setShared, error]);
+    billing, upgrade, askUpgrade,
+  }), [auth, login, signup, logout, signedIn, refreshUser, tournaments, loaded, create, update, refresh, reloadAll, remove, forget, setShared, error, billing, upgrade]);
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
 }

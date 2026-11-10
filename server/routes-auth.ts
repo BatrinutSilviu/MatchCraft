@@ -50,7 +50,7 @@ export function authRoutes(ctx: Ctx) {
       .run(user.id, email, name, await hashPassword(password), Date.now());
     setSessionCookie(ctx, res, createSession(db, user.id));
     sendVerification(user);
-    res.status(201).json({ user: { ...user, emailVerified: false } });
+    res.status(201).json({ user: { ...user, emailVerified: false, plan: 'free' } });
   });
 
   r.post('/login', async (req, res) => {

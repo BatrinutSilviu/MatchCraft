@@ -7,6 +7,8 @@ import { PublicView, TournamentPage } from './components/TournamentView';
 import { UserMenu } from './components/UserMenu';
 import { ForgotPage, ResetPage, VerifyBanner, VerifyPage } from './components/AccountPages';
 import { InvitePage } from './components/InvitePage';
+import { TvView } from './components/TvView';
+import { AccountPlanPage, UpgradeDialog } from './components/Upgrade';
 
 export function App() {
   const route = useHashRoute();
@@ -16,6 +18,11 @@ export function App() {
   const next = params.get('next') ?? '/';
   const token = params.get('token') ?? '';
   const email = params.get('email') ?? undefined;
+  const upgraded = params.get('upgraded') === '1';
+
+  // A venue screen gets the whole window, without the app's header.
+  const tv = path.match(/^\/tv\/([^/]+)/);
+  if (tv) return <TvView shareId={tv[1]} />;
 
   const page = () => {
     // Pages reached from a link work whether or not you're logged in.
@@ -35,7 +42,8 @@ export function App() {
       return <Landing />;
     }
     const owned = path.match(/^\/t\/([^/]+)/);
-    if (owned) return <TournamentPage id={owned[1]} />;
+    if (owned) return <TournamentPage key={owned[1]} id={owned[1]} upgraded={upgraded} />;
+    if (path === '/account') return <AccountPlanPage upgraded={upgraded} />;
     if (path === '/new') return <CreateWizard />;
     return <Home />;
   };
@@ -63,6 +71,7 @@ export function App() {
         </div>
       )}
       <main className="page">{page()}</main>
+      <UpgradeDialog />
     </div>
   );
 }

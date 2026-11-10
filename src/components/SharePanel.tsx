@@ -41,14 +41,20 @@ export function SharePanel({ t }: { t: Tournament }) {
       {open && (
         <div className="menu-pop card share-pop">
           <strong>Share with players & fans</strong>
-          <p className="muted small">Anyone with the link can view results and tables. Only you can edit.</p>
+          <p className="muted small">
+            Anyone with the link can view results and tables{t.phase === 'setup' ? ', and sign up while sign-ups are open' : ''}. Only organisers can edit.
+          </p>
           {t.shareId ? (
             <>
               <div className="row">
                 <input readOnly value={url} onFocus={(e) => e.target.select()} aria-label="Share link" />
                 <button className="btn btn-primary btn-sm" onClick={copy}>{copied ? 'Copied!' : 'Copy'}</button>
               </div>
-              <button className="btn btn-sm btn-ghost danger" disabled={busy} onClick={() => toggle(false)}>Turn off link</button>
+              <div className="row wrap between">
+                <a className="btn btn-sm" href={`#/tv/${t.shareId}`} target="_blank" rel="noopener">📺 Open TV mode</a>
+                <button className="btn btn-sm btn-ghost danger" disabled={busy} onClick={() => toggle(false)}>Turn off link</button>
+              </div>
+              <p className="muted small">TV mode cycles through fixtures, tables and the bracket. Put it on a big screen at the venue.</p>
             </>
           ) : (
             <button className="btn btn-primary" disabled={busy} onClick={() => toggle(true)}>

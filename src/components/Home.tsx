@@ -107,7 +107,9 @@ export function Home() {
                   </div>
                 </div>
                 {t.role === 'editor' && <div className="pill">👥 Co-organising with {t.ownerName}</div>}
-                {champName ? (
+                {t.phase === 'setup' ? (
+                  <div className="pill">{t.registration?.open ? '🟢 Sign-ups open' : '📝 Setting up'} · {t.participants.length} entered</div>
+                ) : champName ? (
                   <div className="pill pill-win">🏆 {champName}</div>
                 ) : (
                   <div className="progress">

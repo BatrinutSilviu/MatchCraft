@@ -2,6 +2,7 @@ import { useState } from 'react';
 import type { Match, Result, Side, Tournament } from '../types';
 import { buildResult, drawsAllowed, scoreWarning, setWarning, type ResultInput } from '../engine/result';
 import { describeSource, groupLetter } from '../engine/progress';
+import { formatClock, spansDays } from '../engine/schedule';
 
 interface Props {
   t: Tournament;
@@ -93,6 +94,12 @@ export function MatchCard({ t, m, onSave, showStage, defaultOpen = false }: Prop
         </span>
         <span className={`team away ${sideClass('away')}`}>{name(m.away, 'away')}</span>
       </button>
+      {(m.startsAt !== undefined || m.court) && !open && (
+        <div className="match-when small">
+          {m.startsAt !== undefined && <span>🕒 {formatClock(m.startsAt, spansDays(t))}</span>}
+          {m.court && <span>📍 {m.court}</span>}
+        </div>
+      )}
       {r && (r.sets || r.decidedBy || (r.home === r.away && r.winner !== 'draw')) && !open && (
         <div className="match-detail muted small">
           {r.sets?.map((s) => `${s.home}–${s.away}`).join(', ')}

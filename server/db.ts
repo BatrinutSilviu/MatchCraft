@@ -67,6 +67,34 @@ const MIGRATIONS = [
   );
   CREATE INDEX invites_tournament ON invites(tournament_id);
   `,
+  `
+  -- Paid plans: 'pro' on a tournament (event pass) or 'club' on a user (subscription, covers all they own).
+  ALTER TABLE tournaments ADD COLUMN plan TEXT NOT NULL DEFAULT 'free';
+  ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'free';
+  ALTER TABLE users ADD COLUMN stripe_customer_id TEXT;
+  ALTER TABLE users ADD COLUMN subscription_id TEXT;
+
+  CREATE TABLE payments (
+    session_id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('event', 'club')),
+    tournament_id TEXT,
+    paid_at INTEGER,
+    created_at INTEGER NOT NULL
+  );
+
+  -- Public sign-ups. The contact email stays here, never in the tournament data that spectators can read.
+  CREATE TABLE registrations (
+    id TEXT PRIMARY KEY,
+    tournament_id TEXT NOT NULL REFERENCES tournaments(id) ON DELETE CASCADE,
+    participant_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    email TEXT NOT NULL COLLATE NOCASE,
+    note TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX registrations_tournament ON registrations(tournament_id, created_at);
+  `,
 ];
 
 export function openDb(path: string): DB {

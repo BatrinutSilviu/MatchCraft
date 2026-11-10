@@ -1,8 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import type { Change } from '../store';
 import type { Match, Result, Tournament } from '../types';
 import { navigate, useStore } from '../store';
-import { api } from '../api';
+import { api, liveUrl } from '../api';
+import { useLive } from '../live';
+import { applySchedule, formatClock, spansDays, upNext } from '../engine/schedule';
+import { BrandLogo, MadeWith, SponsorStrip, brandStyle } from './Brand';
+import { PublicSetup, SetupPanel } from './SetupScreen';
 import { FORMAT_INFO } from '../sports';
 import { champion, groupLetter, groupMatches, groupParticipants, isByeMatch, progress, recompute } from '../engine/progress';
 import { canAdvanceSwiss, nextSwissRound, swissRoundCount } from '../engine/swiss';
@@ -13,11 +17,12 @@ import { Bracket } from './Bracket';
 import { Settings } from './Settings';
 import { SharePanel } from './SharePanel';
 
-type Tab = 'matches' | 'standings' | 'bracket' | 'settings';
+type Tab = 'entries' | 'matches' | 'standings' | 'bracket' | 'settings';
 type Filter = 'all' | 'upcoming' | 'played';
 
 function tabsFor(t: Tournament, readOnly: boolean): Tab[] {
   const tabs: Tab[] = (() => {
+    if (t.phase === 'setup') return ['entries'];
     switch (t.format.kind) {
       case 'single': return ['matches'];
       case 'league':
@@ -56,23 +61,15 @@ function tabAfterSave(before: Tournament, after: Tournament): { tab: Tab; note: 
   return null;
 }
 
-const TAB_LABEL: Record<Tab, string> = { matches: 'Matches', standings: 'Standings', bracket: 'Bracket', settings: 'Settings' };
+const TAB_LABEL: Record<Tab, string> = { entries: 'Entries', matches: 'Matches', standings: 'Standings', bracket: 'Bracket', settings: 'Settings' };
 
 /** A tournament the signed-in user owns and can edit. */
-export function TournamentPage({ id }: { id: string }) {
+export function TournamentPage({ id, upgraded }: { id: string; upgraded?: boolean }) {
   const { get, update, refresh, loaded } = useStore();
   const t = get(id);
 
-  // Pick up co-organisers' changes while the page is open.
-  useEffect(() => {
-    const tick = () => document.visibilityState === 'visible' && void refresh(id);
-    const timer = window.setInterval(tick, 15_000);
-    document.addEventListener('visibilitychange', tick);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener('visibilitychange', tick);
-    };
-  }, [id, refresh]);
+  // Co-organisers' edits, sign-ups and payments show up as they happen.
+  useLive(liveUrl.tournament(id), useCallback(() => void refresh(id), [id, refresh]));
 
   if (!t) {
     if (!loaded) return <div className="loading" aria-label="Loading" />;
@@ -83,27 +80,31 @@ export function TournamentPage({ id }: { id: string }) {
       </div>
     );
   }
-  return <TournamentScreen t={t} onUpdate={(change) => update(id, change)} />;
+  return (
+    <TournamentScreen
+      t={t} onUpdate={(change) => update(id, change)}
+      initialNote={upgraded ? (t.pro ? 'Thanks! This tournament is now Pro.' : 'Thanks! Your upgrade will appear here in a moment.') : ''}
+    />
+  );
 }
 
 /** Read-only view for anyone with a share link. */
-export function PublicView({ shareId }: { shareId: string }) {
-  const [state, setState] = useState<{ t?: Tournament; owner?: string; error?: string }>({});
-
-  useEffect(() => {
-    let active = true;
-    const load = () =>
-      api.publicView(shareId)
-        .then(({ tournament, owner }) => active && setState({ t: recompute(tournament), owner }))
-        .catch((e: Error) => active && setState({ error: e.message }));
-    load();
-    // Keep spectators up to date while the organiser enters scores.
-    const timer = window.setInterval(load, 20_000);
-    return () => {
-      active = false;
-      window.clearInterval(timer);
-    };
+export function usePublicTournament(shareId: string) {
+  const [state, setState] = useState<{ t?: Tournament; owner?: string; waitlist?: number; error?: string }>({});
+  const load = useCallback(() => {
+    api.publicView(shareId)
+      .then(({ tournament, owner, waitlist }) => setState((cur) => (
+        cur.t && (cur.t.version ?? 0) > (tournament.version ?? 0) ? cur : { t: recompute(tournament), owner, waitlist }
+      )))
+      .catch((e: Error) => setState({ error: e.message }));
   }, [shareId]);
+  // Spectators see each score the moment the organiser saves it.
+  useLive(liveUrl.shared(shareId), load);
+  return state;
+}
+
+export function PublicView({ shareId }: { shareId: string }) {
+  const state = usePublicTournament(shareId);
 
   if (state.error) {
     return (
@@ -114,15 +115,38 @@ export function PublicView({ shareId }: { shareId: string }) {
     );
   }
   if (!state.t) return <div className="loading" aria-label="Loading" />;
-  return <TournamentScreen t={state.t} subtitle={`Organised by ${state.owner} · updates live`} />;
+  const t = state.t;
+  return (
+    <div className="stack-lg branded" style={brandStyle(t.branding)}>
+      <TournamentScreen
+        t={t} shareId={shareId} waitlist={state.waitlist ?? 0}
+        subtitle={`Organised by ${state.owner} · updates live`}
+      />
+      <SponsorStrip t={t} />
+      <div className="row wrap between public-foot">
+        <a className="btn btn-sm btn-ghost" href={`#/tv/${shareId}`}>📺 TV mode</a>
+        <MadeWith t={t} />
+      </div>
+    </div>
+  );
 }
 
-function TournamentScreen({ t, onUpdate, subtitle }: { t: Tournament; onUpdate?: (change: Change) => Promise<boolean>; subtitle?: string }) {
+interface ScreenProps {
+  t: Tournament;
+  onUpdate?: (change: Change) => Promise<boolean>;
+  subtitle?: string;
+  /** Public view only: the share link id, for the sign-up form. */
+  shareId?: string;
+  waitlist?: number;
+  initialNote?: string;
+}
+
+function TournamentScreen({ t, onUpdate, subtitle, shareId, waitlist = 0, initialNote = '' }: ScreenProps) {
   const readOnly = !onUpdate;
   const [tab, setTab] = useState<Tab | null>(null);
   const [filter, setFilter] = useState<Filter>('all');
   const [picked, setPicked] = useState<string | null>(null);
-  const [note, setNote] = useState('');
+  const [note, setNote] = useState(initialNote);
 
   const tabs = tabsFor(t, readOnly);
   const active = tab && tabs.includes(tab) ? tab : tabs[0];
@@ -138,9 +162,12 @@ function TournamentScreen({ t, onUpdate, subtitle }: { t: Tournament; onUpdate?:
     });
   });
   // Guarded so a round another organiser already paired isn't paired twice.
-  const nextRound = onUpdate && (() => void onUpdate((cur) => (
-    canAdvanceSwiss(cur) ? { ...cur, matches: [...cur.matches, ...nextSwissRound(cur)] } : cur
-  )));
+  const nextRound = onUpdate && (() => void onUpdate((cur) => {
+    if (!canAdvanceSwiss(cur)) return cur;
+    const paired = { ...cur, matches: [...cur.matches, ...nextSwissRound(cur)] };
+    // Slot the new round in after the last scheduled match.
+    return cur.schedule ? applySchedule(paired, cur.schedule, 'missing') : paired;
+  }));
 
   const champ = champion(t);
   const champName = champ && t.participants.find((p) => p.id === champ)?.name;
@@ -151,11 +178,12 @@ function TournamentScreen({ t, onUpdate, subtitle }: { t: Tournament; onUpdate?:
     <div className="stack-lg">
       <section className="t-header">
         <div className="t-header-main">
-          <span className="t-emoji big">{t.emoji}</span>
+          <BrandLogo t={t} />
           <div>
             <h1>{t.name}</h1>
             <p className="muted">
-              {t.sportName} · {FORMAT_INFO[t.format.kind].name} · {t.participants.length} {t.participantNoun.toLowerCase()}s · {done}/{total} played
+              {t.sportName} · {FORMAT_INFO[t.format.kind].name} · {t.participants.length} {t.participantNoun.toLowerCase()}s
+              {t.phase === 'setup' ? ' · sign-ups' : ` · ${done}/${total} played`}
               {t.rules.matchMinutes ? ` · ${formatMinutes(t.rules.matchMinutes)} matches` : ''}
             </p>
             {subtitle && <p className="muted small">{subtitle}</p>}
@@ -191,6 +219,10 @@ function TournamentScreen({ t, onUpdate, subtitle }: { t: Tournament; onUpdate?:
           <button className="icon-btn" onClick={() => setNote('')} aria-label="Dismiss">✕</button>
         </div>
       )}
+
+      {active === 'entries' && (onUpdate
+        ? <SetupPanel t={t} onUpdate={onUpdate} />
+        : shareId && <PublicSetup t={t} shareId={shareId} waitlist={waitlist} />)}
 
       {active === 'matches' && (t.format.kind === 'single' ? (
         <div className="single-match">
@@ -263,9 +295,27 @@ function MatchesTab({ t, filter, setFilter, onSave, onNextRound }: {
 
   const swiss = t.format.kind === 'swiss';
   const roundsPlayed = swiss ? swissRoundCount(t) : 0;
+  const next = upNext(t, 4);
+  const withDay = spansDays(t);
 
   return (
     <div className="stack">
+      {next.length > 0 && (
+        <section className="card up-next">
+          <h3 className="section-title">Up next</h3>
+          <div className="up-next-list">
+            {next.map((m) => (
+              <div key={m.id} className="up-next-item">
+                <span className="when">{formatClock(m.startsAt!, withDay)}</span>
+                <span className="where">{m.court}</span>
+                <span className="who">
+                  {t.participants.find((p) => p.id === m.home)?.name} <span className="muted">vs</span> {t.participants.find((p) => p.id === m.away)?.name}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
       <div className="row wrap between">
         <div className="segmented small-seg">
           {(['all', 'upcoming', 'played'] as Filter[]).map((f) => (

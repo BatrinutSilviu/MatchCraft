@@ -71,4 +71,12 @@ export const emails = {
       `${inviter} invited you to help run “${tournament}” on Matchcraft.`,
       'As a co-organiser you can enter scores and change the tournament’s settings.',
     ], { label: 'Accept invitation', url }, 'This invitation expires in 14 days. If you weren’t expecting it, you can ignore this email.'),
+
+  registered: (to: string, name: string, tournament: string, url: string, entered: boolean) =>
+    layout(to, entered ? `You’re in: ${tournament}` : `You’re on the waitlist for ${tournament}`, [
+      `Hi ${name},`,
+      entered
+        ? `You’re signed up for “${tournament}”. Fixtures, times and results will appear on the tournament page.`
+        : `“${tournament}” is full right now, so you’re on the waitlist. The organiser will add you if a spot opens.`,
+    ], { label: 'View tournament', url }, 'You got this email because someone signed up with this address on Matchcraft. If it wasn’t you, you can ignore it.'),
 };

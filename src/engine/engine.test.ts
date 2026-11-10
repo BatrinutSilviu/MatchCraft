@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Match, Participant, Result, Tournament, TournamentDraft } from '../types';
 import { getSport } from '../sports';
-import { createTournament, groupQualifiers, roundRobin, seedOrder } from './generate';
+import { createTournament, groupQualifiers, roundRobin, seedOrder, startTournament } from './generate';
+import { applySchedule, upNext } from './schedule';
 import { champion, isByeMatch, recompute } from './progress';
 import { standings } from './standings';
 import { canAdvanceSwiss, nextSwissRound } from './swiss';
@@ -161,5 +162,97 @@ describe('swiss', () => {
     expect(byes).toHaveLength(5);
     expect(new Set(byes).size).toBe(5);
     expect(champion(t)).toBe('p1');
+  });
+});
+
+describe('schedule', () => {
+  const MIN = 60_000;
+  const settings = { start: 1_000_000 * MIN, courts: ['C1', 'C2'], matchMinutes: 20, breakMinutes: 5 };
+
+  /** No court and no participant is ever in two places at once. */
+  function assertNoClashes(t: Tournament) {
+    const slots = t.matches.filter((m) => m.startsAt !== undefined);
+    for (const a of slots) {
+      for (const b of slots) {
+        if (a === b) continue;
+        const overlap = a.startsAt! < b.startsAt! + 20 * MIN && b.startsAt! < a.startsAt! + 20 * MIN;
+        if (!overlap) continue;
+        expect(a.court).not.toBe(b.court);
+        const ids = [a.home, a.away].filter(Boolean);
+        for (const p of [b.home, b.away]) if (p) expect(ids).not.toContain(p);
+      }
+    }
+  }
+
+  it('packs a league onto all courts without clashes', () => {
+    const t = applySchedule(createTournament(draft('football', 'league', 6)), settings);
+    expect(t.matches.every((m) => m.startsAt !== undefined && m.court)).toBe(true);
+    expect(new Set(t.matches.map((m) => m.court))).toEqual(new Set(['C1', 'C2']));
+    assertNoClashes(t);
+    // 15 matches, 3 per round, 2 courts: never more than 2 at the same time.
+    const first = t.matches.filter((m) => m.startsAt === settings.start);
+    expect(first).toHaveLength(2);
+  });
+
+  it('plays knockout rounds only after their feeder matches end, skipping byes', () => {
+    const t = applySchedule(createTournament(draft('tennis', 'knockout', 6)), settings);
+    const byId = new Map(t.matches.map((m) => [m.id, m]));
+    for (const m of t.matches) {
+      if (isByeMatch(m)) {
+        expect(m.startsAt).toBeUndefined();
+        continue;
+      }
+      for (const src of [m.homeSource, m.awaySource]) {
+        if (src?.type !== 'winner') continue;
+        const feeder = byId.get(src.matchId)!;
+        if (feeder.startsAt !== undefined) expect(m.startsAt!).toBeGreaterThanOrEqual(feeder.startsAt + 25 * MIN);
+      }
+    }
+    assertNoClashes(t);
+  });
+
+  it('starts the knockout stage after the groups it draws from', () => {
+    const t = applySchedule(createTournament(draft('football', 'groups', 8)), settings);
+    const lastGroup = Math.max(...t.matches.filter((m) => m.stage === 'group').map((m) => m.startsAt!));
+    for (const m of t.matches.filter((x) => x.stage === 'knockout')) expect(m.startsAt!).toBeGreaterThan(lastGroup);
+  });
+
+  it('keeps played slots and only places new Swiss rounds', () => {
+    let t = applySchedule(createTournament(draft('chess', 'swiss', 6)), settings);
+    t = playAll(t);
+    const before = t.matches.map((m) => m.startsAt);
+    t = applySchedule(recompute({ ...t, matches: [...t.matches, ...nextSwissRound(t)] }), settings, 'missing');
+    expect(t.matches.slice(0, before.length).map((m) => m.startsAt)).toEqual(before);
+    const round2 = t.matches.filter((m) => m.round === 2);
+    expect(Math.min(...round2.map((m) => m.startsAt!))).toBeGreaterThanOrEqual(Math.max(...before.map(Number)) + 25 * MIN);
+    assertNoClashes(t);
+  });
+
+  it('lists upcoming matches in time order', () => {
+    const t = applySchedule(createTournament(draft('football', 'league', 4)), settings);
+    const next = upNext(t, 3);
+    expect(next).toHaveLength(3);
+    expect(next.map((m) => m.startsAt)).toEqual([...next.map((m) => m.startsAt)].sort((a, b) => a! - b!));
+  });
+});
+
+describe('starting a tournament that collected sign-ups', () => {
+  it('generates fixtures from the entries and closes registration', () => {
+    const setup: Tournament = {
+      ...createTournament(draft('football', 'league', 2)),
+      phase: 'setup', matches: [], participants: people(4).reverse(),
+      registration: { open: true, capacity: 8 },
+    };
+    const started = startTournament(setup);
+    if (typeof started === 'string') throw new Error(started);
+    expect(started.phase).toBeUndefined();
+    expect(started.registration?.open).toBe(false);
+    expect(started.matches).toHaveLength(6);
+    expect(started.participants.map((p) => p.seed)).toEqual([1, 2, 3, 4]);
+  });
+
+  it('refuses when there are not enough entries', () => {
+    const setup: Tournament = { ...createTournament(draft('football', 'league', 2)), phase: 'setup', matches: [], participants: people(1) };
+    expect(startTournament(setup)).toMatch(/at least 2/);
   });
 });

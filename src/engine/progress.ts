@@ -121,6 +121,7 @@ export function ordinal(n: number): string {
 }
 
 export function champion(t: Tournament): string | null {
+  if (t.phase === 'setup' || !t.matches.length) return null;
   switch (t.format.kind) {
     case 'single':
       return winnerId(t.matches[0]);

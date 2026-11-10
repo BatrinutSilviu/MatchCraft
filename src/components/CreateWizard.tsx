@@ -1,21 +1,22 @@
 import { useMemo, useState } from 'react';
-import type { FormatKind, FormatOptions, Rules, TournamentDraft } from '../types';
-import { FORMAT_INFO, SPORTS, getSport } from '../sports';
+import type { FormatOptions, Rules, Tournament, TournamentDraft } from '../types';
+import { SPORTS, getSport } from '../sports';
 import { createTournament, validateDraft } from '../engine/generate';
 import { formatMinutes } from '../engine/result';
 import { uid } from '../engine/uid';
 import { navigate, useStore } from '../store';
 import { RulesEditor } from './RulesEditor';
 import { ParticipantsEditor } from './ParticipantsEditor';
+import { FormatEditor, defaultFormat } from './FormatEditor';
 
 const STEPS = ['Sport', 'Format', 'Participants', 'Rules'] as const;
 
-const defaultFormat = (kind: FormatKind): FormatOptions => ({
-  kind, legs: 1, groupCount: 2, advancePerGroup: 2, thirdPlace: false, swissRounds: 5,
-});
 
 export function CreateWizard() {
-  const { create } = useStore();
+  const { create, setShared, billing, auth } = useStore();
+  const [signups, setSignups] = useState(false);
+  const [capacity, setCapacity] = useState(16);
+  const [signupNote, setSignupNote] = useState('');
   const [step, setStep] = useState(0);
   const [sportId, setSportId] = useState('');
   const [sportName, setSportName] = useState('');
@@ -59,7 +60,13 @@ export function CreateWizard() {
       if (!name.trim()) return 'Give your tournament a name.';
       if (!sportName.trim() && sportId === 'custom') return 'Name your sport.';
     }
-    if (step >= 2) return validateDraft(draft()) ?? '';
+    if (step >= 2) {
+      if (billing.enabled && !(auth.status === 'in' && auth.user.plan === 'club') && names.length > billing.freeParticipantLimit) {
+        return `Free tournaments can have up to ${billing.freeParticipantLimit} entries. Start with fewer, then upgrade the tournament from its Settings tab.`;
+      }
+      if (!signups) return validateDraft(draft()) ?? '';
+      if (new Set(names.map((x) => x.toLowerCase())).size !== names.length) return `Each ${noun.toLowerCase() || 'team'} needs a unique name.`;
+    }
     return '';
   };
 
@@ -71,9 +78,22 @@ export function CreateWizard() {
       setStep(step + 1);
       return;
     }
-    const t = createTournament(draft());
     setCreating(true);
-    if (await create(t)) navigate(`/t/${t.id}`);
+    if (signups) {
+      // Fixtures are generated later, once everyone has signed up.
+      const now = Date.now();
+      const t: Tournament = {
+        ...draft(), phase: 'setup', matches: [], createdAt: now, updatedAt: now,
+        registration: { open: true, capacity: Math.max(0, capacity), message: signupNote.trim() || undefined },
+      };
+      if (await create(t)) {
+        await setShared(t.id, true);
+        navigate(`/t/${t.id}`);
+      }
+    } else {
+      const t = createTournament(draft());
+      if (await create(t)) navigate(`/t/${t.id}`);
+    }
     setCreating(false);
   };
 
@@ -91,7 +111,6 @@ export function CreateWizard() {
     setEntries(Array.from({ length: count }, (_, i) => `${noun} ${i + 1}`));
   };
 
-  const setF = <K extends keyof FormatOptions>(k: K, v: FormatOptions[K]) => setFormat({ ...format, [k]: v });
   const n = names.length;
 
   return (
@@ -146,53 +165,7 @@ export function CreateWizard() {
             </label>
           </div>
 
-          <div className="format-grid">
-            {(Object.keys(FORMAT_INFO) as FormatKind[]).map((k) => (
-              <button key={k} type="button" className={`format-tile ${format.kind === k ? 'selected' : ''}`} onClick={() => setF('kind', k)}>
-                <span className="format-icon">{FORMAT_INFO[k].icon}</span>
-                <strong>{FORMAT_INFO[k].name}</strong>
-                <small className="muted">{FORMAT_INFO[k].blurb}</small>
-              </button>
-            ))}
-          </div>
-
-          {format.kind !== 'single' && (
-            <div className="card form-grid">
-              {(format.kind === 'league' || format.kind === 'groups') && (
-                <label className="field">
-                  <span>Each pair plays</span>
-                  <select value={format.legs} onChange={(e) => setF('legs', Number(e.target.value) as 1 | 2)}>
-                    <option value={1}>Once</option>
-                    <option value={2}>Twice (home & away)</option>
-                  </select>
-                </label>
-              )}
-              {format.kind === 'groups' && (
-                <>
-                  <label className="field">
-                    <span>Groups</span>
-                    <input type="number" min={1} max={16} value={format.groupCount} onChange={(e) => setF('groupCount', Math.max(1, Number(e.target.value) || 1))} />
-                  </label>
-                  <label className="field">
-                    <span>Advance per group</span>
-                    <input type="number" min={1} value={format.advancePerGroup} onChange={(e) => setF('advancePerGroup', Math.max(1, Number(e.target.value) || 1))} />
-                  </label>
-                </>
-              )}
-              {(format.kind === 'knockout' || format.kind === 'groups') && (
-                <label className="field check">
-                  <input type="checkbox" checked={format.thirdPlace} onChange={(e) => setF('thirdPlace', e.target.checked)} />
-                  <span>Play a third-place match</span>
-                </label>
-              )}
-              {format.kind === 'swiss' && (
-                <label className="field">
-                  <span>Rounds</span>
-                  <input type="number" min={1} value={format.swissRounds} onChange={(e) => setF('swissRounds', Math.max(1, Number(e.target.value) || 1))} />
-                </label>
-              )}
-            </div>
-          )}
+          <FormatEditor format={format} onChange={setFormat} />
         </section>
       )}
 
@@ -203,6 +176,30 @@ export function CreateWizard() {
             The order is the seeding: put the strongest first so they meet later. Drag rows or use the arrows to reorder.
             {format.kind === 'single' && ' A single match needs exactly two.'}
           </p>
+          <div className={`card stack-sm signup-toggle ${signups ? 'on' : ''}`}>
+            <label className="field check">
+              <input type="checkbox" checked={signups} onChange={(e) => setSignups(e.target.checked)} />
+              <span><strong>Let {(noun || 'team').toLowerCase()}s sign up through a link</strong></span>
+            </label>
+            <p className="muted small">
+              {signups
+                ? 'You get a link to send round. Anyone you add below is entered too. Generate the fixtures when you’re ready.'
+                : 'Collect entries online instead of typing them all in.'}
+            </p>
+            {signups && (
+              <div className="form-grid">
+                <label className="field">
+                  <span>Maximum entries</span>
+                  <input type="number" min={0} value={capacity} onChange={(e) => setCapacity(Math.max(0, Number(e.target.value) || 0))} />
+                  <small className="muted">0 = no limit. Later sign-ups join a waitlist.</small>
+                </label>
+                <label className="field span-2">
+                  <span>Note for players (optional)</span>
+                  <input value={signupNote} maxLength={300} onChange={(e) => setSignupNote(e.target.value)} placeholder="e.g. Entry is €10 per team, pay on the day." />
+                </label>
+              </div>
+            )}
+          </div>
           <ParticipantsEditor entries={entries} onChange={setEntries} noun={noun || 'Team'} />
           <div className="row wrap">
             <span className="pill">{n} {(noun || 'team').toLowerCase()}{n === 1 ? '' : 's'}</span>
@@ -228,7 +225,7 @@ export function CreateWizard() {
         <div className="wizard-nav">
           <button type="button" className="btn" onClick={() => { setError(''); setStep(step - 1); }}>Back</button>
           <button type="button" className="btn btn-primary" onClick={next} disabled={creating}>
-            {step === STEPS.length - 1 ? 'Create tournament' : 'Continue'}
+            {step === STEPS.length - 1 ? (signups ? 'Create & open sign-ups' : 'Create tournament') : 'Continue'}
           </button>
         </div>
       )}

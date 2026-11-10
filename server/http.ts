@@ -1,6 +1,8 @@
 import type { NextFunction, Request, Response } from 'express';
 import type { DB } from './db';
 import type { Mailer } from './mailer';
+import type { Billing, PriceDisplay } from './billing';
+import type { LiveHub } from './live';
 import { SESSION_DAYS, userForToken, type SessionUser } from './auth';
 
 export const COOKIE = 'mc_session';
@@ -12,6 +14,12 @@ export interface Ctx {
   /** Public base URL used in emailed links, e.g. https://matchcraft.example.com */
   appUrl: string;
   secureCookies?: boolean;
+  live: LiveHub;
+  /** Null when billing is off: every feature is unlocked (self-hosting). */
+  billing: Billing | null;
+  prices: PriceDisplay;
+  /** Most entries a free tournament may have while billing is on. */
+  freeParticipantLimit: number;
 }
 
 export type AuthedRequest = Request & { user: SessionUser };

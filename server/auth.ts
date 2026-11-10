@@ -41,20 +41,25 @@ export interface SessionUser {
   email: string;
   name: string;
   emailVerified: boolean;
+  /** 'club' when the user has an active Club subscription. */
+  plan: 'free' | 'club';
 }
 
 export function userForToken(db: DB, token: string | undefined): SessionUser | null {
   if (!token) return null;
   const row = db.prepare(
-    `SELECT u.id, u.email, u.name, u.email_verified_at, s.expires_at
+    `SELECT u.id, u.email, u.name, u.email_verified_at, u.plan, s.expires_at
      FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ?`,
-  ).get(sha256(token)) as { id: string; email: string; name: string; email_verified_at: number | null; expires_at: number } | undefined;
+  ).get(sha256(token)) as { id: string; email: string; name: string; email_verified_at: number | null; plan: string; expires_at: number } | undefined;
   if (!row) return null;
   if (row.expires_at < Date.now()) {
     deleteSession(db, token);
     return null;
   }
-  return { id: row.id, email: row.email, name: row.name, emailVerified: row.email_verified_at !== null };
+  return {
+    id: row.id, email: row.email, name: row.name, emailVerified: row.email_verified_at !== null,
+    plan: row.plan === 'club' ? 'club' : 'free',
+  };
 }
 
 export function deleteSession(db: DB, token: string) {

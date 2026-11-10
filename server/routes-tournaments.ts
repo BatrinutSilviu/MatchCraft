@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { RateLimiter, TOKEN_TTL, newToken, sha256 } from './auth';
 import { emails } from './mailer';
 import { EMAIL_RE, link, normEmail, requireUser, userOf, type Ctx } from './http';
+import { UPGRADE, brandingError, hasBranding, isPro } from './plan';
 
 type Role = 'owner' | 'editor';
 
@@ -13,19 +14,21 @@ interface TournamentRow {
   version: number;
   owner_name: string;
   role: Role;
+  plan: string;
+  owner_plan: string;
 }
 
 const SELECT_FOR_USER = `
-  SELECT t.id, t.data, t.share_id, t.version, u.name AS owner_name,
+  SELECT t.id, t.data, t.share_id, t.version, t.plan, u.plan AS owner_plan, u.name AS owner_name,
          CASE WHEN t.owner_id = @user THEN 'owner' ELSE 'editor' END AS role
   FROM tournaments t JOIN users u ON u.id = t.owner_id
   WHERE (t.owner_id = @user OR t.id IN (SELECT tournament_id FROM tournament_members WHERE user_id = @user))`;
 
-function serialize(row: TournamentRow) {
-  return {
+function serializer(ctx: Ctx) {
+  return (row: TournamentRow) => ({
     ...JSON.parse(row.data), id: row.id, shareId: row.share_id ?? undefined,
-    version: row.version, role: row.role, ownerName: row.owner_name,
-  };
+    version: row.version, role: row.role, ownerName: row.owner_name, pro: isPro(ctx, row),
+  });
 }
 
 /** Minimal shape check; the client engine owns the detailed structure. */
@@ -40,13 +43,32 @@ function validTournament(body: unknown): body is Record<string, unknown> {
 }
 
 /** Fields the server owns; never stored from client input. */
-const SERVER_FIELDS = ['shareId', 'version', 'role', 'ownerName'];
+const SERVER_FIELDS = ['shareId', 'version', 'role', 'ownerName', 'pro'];
 
 export function tournamentRoutes(ctx: Ctx) {
   const { db } = ctx;
   const r = Router();
+  const serialize = serializer(ctx);
+  const changed = (id: string) => {
+    const { version } = db.prepare('SELECT version FROM tournaments WHERE id = ?').get(id) as { version: number };
+    ctx.live.publish(id, { version });
+  };
   const inviteLimiter = new RateLimiter(20, 3_600_000);
   r.use('/tournaments', requireUser(ctx));
+
+  /** Paid-plan limits; only checked on changes, so nothing breaks when a plan lapses. */
+  const limitError = (pro: boolean, next: Record<string, unknown>, prev?: Record<string, unknown>): string | null => {
+    if (pro) return null;
+    const count = (t?: Record<string, unknown>) => (Array.isArray(t?.participants) ? t.participants.length : 0);
+    const limit = ctx.freeParticipantLimit;
+    if (count(next) > limit && count(next) > count(prev)) {
+      return `Free tournaments can have up to ${limit} entries. Upgrade this tournament to add more.`;
+    }
+    if (hasBranding(next.branding) && JSON.stringify(next.branding) !== JSON.stringify(prev?.branding)) {
+      return 'Branding and sponsors are part of Pro. Upgrade this tournament to use them.';
+    }
+    return null;
+  };
 
   const load = (id: string, userId: string) =>
     db.prepare(`${SELECT_FOR_USER} AND t.id = @id`).get({ user: userId, id }) as TournamentRow | undefined;
@@ -74,11 +96,16 @@ export function tournamentRoutes(ctx: Ctx) {
     const id = req.params.id;
     const body = req.body?.tournament;
     if (id.length > 64 || !validTournament(body)) return void res.status(400).json({ error: 'Invalid tournament.' });
+    const badBranding = brandingError(body.branding);
+    if (badBranding) return void res.status(400).json({ error: badBranding });
     const data = JSON.stringify({ ...Object.fromEntries(Object.entries(body).filter(([k]) => !SERVER_FIELDS.includes(k))), id });
     const now = Date.now();
 
     const exists = db.prepare('SELECT 1 FROM tournaments WHERE id = ?').get(id);
     if (!exists) {
+      const ownerPlan = (db.prepare('SELECT plan FROM users WHERE id = ?').get(user.id) as { plan: string }).plan;
+      const limited = limitError(isPro(ctx, { plan: 'free', owner_plan: ownerPlan }), body);
+      if (limited) return void res.status(402).json({ error: limited, code: UPGRADE });
       db.prepare('INSERT INTO tournaments (id, owner_id, data, created_at, updated_at, version) VALUES (?, ?, ?, ?, ?, 1)')
         .run(id, user.id, data, now, now);
       return void res.status(201).json({ tournament: serialize(load(id, user.id)!) });
@@ -86,11 +113,14 @@ export function tournamentRoutes(ctx: Ctx) {
 
     const row = load(id, user.id);
     if (!row) return void notFound(res);
+    const limited = limitError(isPro(ctx, row), body, JSON.parse(row.data));
+    if (limited) return void res.status(402).json({ error: limited, code: UPGRADE });
     const result = db.prepare('UPDATE tournaments SET data = ?, updated_at = ?, version = version + 1 WHERE id = ? AND version = ?')
       .run(data, now, id, Number(req.body?.baseVersion));
     if (!result.changes) {
       return void res.status(409).json({ error: 'Someone else updated this tournament.', tournament: serialize(load(id, user.id)!) });
     }
+    changed(id);
     res.json({ tournament: serialize(load(id, user.id)!) });
   });
 
@@ -99,6 +129,7 @@ export function tournamentRoutes(ctx: Ctx) {
     if (!row) return void notFound(res);
     if (row.role !== 'owner') return void ownerOnly(res, 'delete this tournament');
     db.prepare('DELETE FROM tournaments WHERE id = ?').run(row.id);
+    ctx.live.publish(row.id, { deleted: true });
     res.json({ ok: true });
   });
 
@@ -110,6 +141,13 @@ export function tournamentRoutes(ctx: Ctx) {
       .run(enabled ? 1 : 0, randomBytes(9).toString('base64url'), row.id);
     const { share_id } = db.prepare('SELECT share_id FROM tournaments WHERE id = ?').get(row.id) as { share_id: string | null };
     res.json({ shareId: share_id });
+  });
+
+  /** Live updates for organisers: an event with the new version whenever anyone changes it. */
+  r.get('/tournaments/:id/live', (req, res) => {
+    const row = load(req.params.id, userOf(req).id);
+    if (!row) return void notFound(res);
+    ctx.live.subscribe(row.id, res);
   });
 
   // --- Co-organisers ---
@@ -221,12 +259,29 @@ export function tournamentRoutes(ctx: Ctx) {
     res.json({ tournamentId: invite.tournament_id });
   });
 
+  const findShared = (shareId: string) => db.prepare(
+    `SELECT t.id, t.data, t.version, t.plan, u.plan AS owner_plan, u.name AS owner FROM tournaments t
+     JOIN users u ON u.id = t.owner_id WHERE t.share_id = ?`,
+  ).get(shareId) as { id: string; data: string; version: number; plan: string; owner_plan: string; owner: string } | undefined;
+  const linkGone = 'This link doesn’t work anymore.';
+
   r.get('/public/:shareId', (req, res) => {
-    const row = db.prepare(
-      `SELECT t.id, t.data, u.name AS owner FROM tournaments t JOIN users u ON u.id = t.owner_id WHERE t.share_id = ?`,
-    ).get(req.params.shareId) as { id: string; data: string; owner: string } | undefined;
-    if (!row) return void res.status(404).json({ error: 'This link doesn’t work anymore.' });
-    res.json({ tournament: { ...JSON.parse(row.data), id: row.id }, owner: row.owner });
+    const row = findShared(req.params.shareId);
+    if (!row) return void res.status(404).json({ error: linkGone });
+    const t = JSON.parse(row.data);
+    const entered = new Set((t.participants ?? []).map((p: { id: string }) => p.id));
+    const regs = db.prepare('SELECT participant_id FROM registrations WHERE tournament_id = ?').all(row.id) as { participant_id: string }[];
+    res.json({
+      tournament: { ...t, id: row.id, version: row.version, pro: isPro(ctx, row) },
+      owner: row.owner,
+      waitlist: regs.filter((x) => !entered.has(x.participant_id)).length,
+    });
+  });
+
+  r.get('/public/:shareId/live', (req, res) => {
+    const row = findShared(req.params.shareId);
+    if (!row) return void res.status(404).json({ error: linkGone });
+    ctx.live.subscribe(row.id, res);
   });
 
   return r;

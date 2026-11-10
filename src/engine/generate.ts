@@ -1,6 +1,7 @@
 import type { Match, Participant, SlotSource, Tournament, TournamentDraft } from '../types';
 import { uid } from './uid';
 import { recompute } from './progress';
+import { applySchedule } from './schedule';
 
 export function nextPow2(n: number): number {
   let p = 1;
@@ -218,4 +219,19 @@ export function createTournament(d: TournamentDraft): Tournament {
   }
 
   return recompute({ ...d, groups, matches, createdAt: now, updatedAt: now });
+}
+
+/** Turns a tournament that was collecting entries into a running one with fixtures. */
+export function startTournament(t: Tournament): Tournament | string {
+  const draft: TournamentDraft = {
+    id: t.id, name: t.name, sportId: t.sportId, sportName: t.sportName, emoji: t.emoji,
+    participantNoun: t.participantNoun, format: t.format, rules: t.rules,
+    participants: [...t.participants].sort((a, b) => a.seed - b.seed).map((p, i) => ({ ...p, seed: i + 1 })),
+    registration: t.registration ? { ...t.registration, open: false } : undefined,
+    schedule: t.schedule, branding: t.branding,
+  };
+  const err = validateDraft(draft);
+  if (err) return err;
+  const { phase: _p, ...started } = { ...createTournament(draft), createdAt: t.createdAt, phase: undefined };
+  return started.schedule ? applySchedule(started, started.schedule) : started;
 }

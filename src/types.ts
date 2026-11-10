@@ -93,6 +93,44 @@ export interface Match {
   isThirdPlace?: boolean;
   /** Swiss bye: `home` sits the round out and is credited a win. */
   bye?: boolean;
+  /** Scheduled start, epoch ms. */
+  startsAt?: number;
+  /** Where it is played, e.g. "Court 2". */
+  court?: string;
+}
+
+export interface ScheduleSettings {
+  /** First match start, epoch ms. */
+  start: number;
+  /** Names of the courts, pitches or tables played on at the same time. */
+  courts: string[];
+  /** Length of one match slot in minutes. */
+  matchMinutes: number;
+  /** Changeover between matches on the same court, in minutes. */
+  breakMinutes: number;
+}
+
+export interface RegistrationSettings {
+  open: boolean;
+  /** Most entries accepted; later sign-ups join the waitlist. 0 = no limit. */
+  capacity: number;
+  /** Optional note shown on the sign-up form. */
+  message?: string;
+}
+
+export interface Sponsor {
+  name: string;
+  /** Small image as a data URL. */
+  logo?: string;
+  url?: string;
+}
+
+export interface Branding {
+  /** Hex colour, e.g. #0b8f5e. */
+  accent?: string;
+  /** Small image as a data URL. */
+  logo?: string;
+  sponsors?: Sponsor[];
 }
 
 export interface Tournament {
@@ -110,11 +148,18 @@ export interface Tournament {
   /** Participant ids per group, for the groups format. */
   groups?: string[][];
   matches: Match[];
+  /** 'setup' while the organiser is still collecting entries; fixtures are generated when it starts. Absent = started. */
+  phase?: 'setup';
+  registration?: RegistrationSettings;
+  schedule?: ScheduleSettings;
+  branding?: Branding;
   /** Server-managed fields, never sent back as data. */
   shareId?: string;
   version?: number;
   role?: 'owner' | 'editor';
   ownerName?: string;
+  /** Paid features unlocked (always true when billing is off). */
+  pro?: boolean;
 }
 
-export type TournamentDraft = Omit<Tournament, 'matches' | 'groups' | 'createdAt' | 'updatedAt' | 'shareId' | 'version' | 'role' | 'ownerName'>;
+export type TournamentDraft = Omit<Tournament, 'matches' | 'groups' | 'createdAt' | 'updatedAt' | 'shareId' | 'version' | 'role' | 'ownerName' | 'pro'>;

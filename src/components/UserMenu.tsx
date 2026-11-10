@@ -3,7 +3,7 @@ import type { User } from '../api';
 import { useStore } from '../store';
 
 export function UserMenu({ user }: { user: User }) {
-  const { logout } = useStore();
+  const { logout, billing } = useStore();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -25,6 +25,11 @@ export function UserMenu({ user }: { user: User }) {
             <strong>{user.name}</strong>
             <div className="muted small">{user.email}</div>
           </div>
+          {billing.enabled && (
+            <a className="btn btn-sm btn-ghost" href="#/account" onClick={() => setOpen(false)}>
+              {user.plan === 'club' ? '✨ Club plan' : 'Plan & billing'}
+            </a>
+          )}
           <button className="btn btn-sm" onClick={logout}>Log out</button>
         </div>
       )}

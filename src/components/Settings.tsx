@@ -3,6 +3,9 @@ import type { Tournament } from '../types';
 import { useStore, type Change } from '../store';
 import { RulesEditor } from './RulesEditor';
 import { Organisers } from './Organisers';
+import { ScheduleEditor } from './ScheduleEditor';
+import { BrandingEditor } from './BrandingEditor';
+import { PlanCard } from './Upgrade';
 
 interface Props {
   t: Tournament;
@@ -40,7 +43,10 @@ export function Settings({ t, onUpdate, onLeave }: Props) {
 
   return (
     <div className="stack-lg settings">
+      <PlanCard tournamentId={t.id} pro={t.pro} />
       <Organisers t={t} onLeft={onLeave} />
+      <ScheduleEditor t={t} onUpdate={onUpdate} key={`sched-${t.schedule?.start ?? 0}-${t.phase ?? 'run'}`} />
+      <BrandingEditor t={t} onUpdate={onUpdate} key={`brand-${JSON.stringify(t.branding ?? {}).length}`} />
 
       <section className="card stack">
         <h3>Names</h3>
@@ -63,7 +69,7 @@ export function Settings({ t, onUpdate, onLeave }: Props) {
 
       <section className="stack">
         <h3>Rules</h3>
-        <RulesEditor rules={t.rules} locked onChange={(rules) => void onUpdate((cur) => ({ ...cur, rules }))} />
+        <RulesEditor rules={t.rules} locked={t.phase !== 'setup'} onChange={(rules) => void onUpdate((cur) => ({ ...cur, rules }))} />
       </section>
 
       <section className="card row wrap between">
